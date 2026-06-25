@@ -117,6 +117,10 @@ interface MetaRow {
 
 const SEEDED_KEY = "seeded";
 
+/** Meta key + default for the surgery date that anchors the Timeline. */
+export const SURGERY_DATE_KEY = "surgeryDate";
+export const SURGERY_DATE_DEFAULT = "2026-06-22";
+
 class AclRehabDB extends Dexie {
   stages!: Table<Stage, string>;
   exercises!: Table<Exercise, string>;
