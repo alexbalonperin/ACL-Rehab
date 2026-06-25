@@ -10,6 +10,7 @@ import { ExerciseForm } from "./ExerciseForm";
 import { StageForm } from "./StageForm";
 import { PtNotesPanel } from "./PtNotesPanel";
 import { BackupPanel } from "./BackupPanel";
+import { SurgeryDateSetting } from "./SurgeryDateSetting";
 
 function ReorderArrows({ onUp, onDown, first, last }: { onUp: () => void; onDown: () => void; first: boolean; last: boolean }) {
   return (
@@ -155,6 +156,9 @@ export function ManageView() {
           );
         })}
       </div>
+
+      <SectionTitle>Rehab settings</SectionTitle>
+      <SurgeryDateSetting />
 
       <SectionTitle>PT notes</SectionTitle>
       <PtNotesPanel />

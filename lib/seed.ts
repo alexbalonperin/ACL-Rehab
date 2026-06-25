@@ -11,6 +11,9 @@ interface SeedExercise extends Omit<Exercise, "id" | "stageId" | "order"> {}
 interface SeedStage {
   name: string;
   note?: string;
+  /** Post-op week range that anchors this phase on the Timeline (week 1 = days 0–6). */
+  startWeekPostOp?: number;
+  endWeekPostOp?: number;
   exercises: SeedExercise[];
 }
 
@@ -18,6 +21,8 @@ const SEED: SeedStage[] = [
   {
     name: "Phase 1 — Weeks 0–2 (Protection & Activation)",
     note: "Protect the graft, restore quad activation, manage swelling. Operated leg is not loaded or moved through range yet.",
+    startWeekPostOp: 1,
+    endWeekPostOp: 2,
     exercises: [
       // --- Active: operated leg, explicitly cleared ---
       {
@@ -130,6 +135,8 @@ const SEED: SeedStage[] = [
   {
     name: "Phase 2 — Early Progression (operated-leg, not cleared yet)",
     note: "Operated-leg progressions to unlock once your PT clears motion and light loading. Keep these in Upcoming until then.",
+    startWeekPostOp: 3,
+    endWeekPostOp: 6,
     exercises: [
       {
         name: "Heel slides",
@@ -184,11 +191,14 @@ const SEED: SeedStage[] = [
   {
     name: "Phase 3 — Strengthening",
     note: "Progressive strengthening of the operated leg. Add exercises here as your PT prescribes them.",
+    startWeekPostOp: 7,
+    endWeekPostOp: 12,
     exercises: [],
   },
   {
     name: "Phase 4 — Return to Sport",
     note: "Power, agility and sport-specific work once strength and stability criteria are met.",
+    startWeekPostOp: 13,
     exercises: [],
   },
 ];
@@ -200,7 +210,14 @@ export function buildSeedData(): { stages: Stage[]; exercises: Exercise[] } {
 
   SEED.forEach((s, si) => {
     const stageId = newId();
-    stages.push({ id: stageId, name: s.name, order: si, note: s.note });
+    stages.push({
+      id: stageId,
+      name: s.name,
+      order: si,
+      note: s.note,
+      startWeekPostOp: s.startWeekPostOp,
+      endWeekPostOp: s.endWeekPostOp,
+    });
     s.exercises.forEach((e, ei) => {
       exercises.push({ ...e, id: newId(), stageId, order: ei });
     });

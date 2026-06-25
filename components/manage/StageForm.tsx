@@ -4,7 +4,14 @@ import { useEffect, useState } from "react";
 import type { Stage } from "@/lib/types";
 import { db } from "@/lib/db";
 import { newId } from "@/lib/id";
-import { Button, Field, Sheet, TextArea, TextInput } from "@/components/ui/primitives";
+import {
+  Button,
+  Field,
+  NumberStepper,
+  Sheet,
+  TextArea,
+  TextInput,
+} from "@/components/ui/primitives";
 
 export function StageForm({
   open,
@@ -19,18 +26,40 @@ export function StageForm({
 }) {
   const [name, setName] = useState(existing?.name ?? "");
   const [note, setNote] = useState(existing?.note ?? "");
+  const [startWeek, setStartWeek] = useState<number | undefined>(existing?.startWeekPostOp);
+  const [endWeek, setEndWeek] = useState<number | undefined>(existing?.endWeekPostOp);
 
   useEffect(() => {
     setName(existing?.name ?? "");
     setNote(existing?.note ?? "");
+    setStartWeek(existing?.startWeekPostOp);
+    setEndWeek(existing?.endWeekPostOp);
   }, [existing, open]);
 
   async function save() {
     if (!name.trim()) return;
+    if (startWeek != null && endWeek != null && endWeek < startWeek) {
+      alert("End week can't be before start week.");
+      return;
+    }
     if (existing) {
-      await db.stages.update(existing.id, { name: name.trim(), note: note.trim() || undefined });
+      // Pass undefined explicitly so Dexie clears a previously-set value (e.g. an
+      // open-ended final phase that no longer has an end week).
+      await db.stages.update(existing.id, {
+        name: name.trim(),
+        note: note.trim() || undefined,
+        startWeekPostOp: startWeek,
+        endWeekPostOp: endWeek,
+      });
     } else {
-      await db.stages.add({ id: newId(), name: name.trim(), order: nextOrder, note: note.trim() || undefined });
+      await db.stages.add({
+        id: newId(),
+        name: name.trim(),
+        order: nextOrder,
+        note: note.trim() || undefined,
+        startWeekPostOp: startWeek,
+        endWeekPostOp: endWeek,
+      });
     }
     onClose();
   }
@@ -63,6 +92,14 @@ export function StageForm({
         <Field label="Note (optional)">
           <TextArea value={note} onChange={(e) => setNote(e.target.value)} />
         </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Start week (post-op)" hint="Week 1 = surgery week. Blank = off timeline.">
+            <NumberStepper value={startWeek} onChange={setStartWeek} min={1} max={104} />
+          </Field>
+          <Field label="End week" hint="Blank = open-ended (final phase).">
+            <NumberStepper value={endWeek} onChange={setEndWeek} min={1} max={104} />
+          </Field>
+        </div>
         <div className="flex gap-2 pt-2">
           {existing && (
             <Button variant="danger" onClick={remove}>

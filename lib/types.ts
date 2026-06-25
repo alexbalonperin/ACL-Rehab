@@ -12,6 +12,14 @@ export interface Stage {
   name: string;
   order: number;
   note?: string;
+  /**
+   * Post-op week this phase starts on, 1-based (week 1 = post-op days 0–6).
+   * Used to place the phase on the surgery-anchored Timeline. Omit to leave the
+   * phase off the week schedule.
+   */
+  startWeekPostOp?: number;
+  /** Post-op week this phase ends on, inclusive. Omit for an open-ended final phase. */
+  endWeekPostOp?: number;
 }
 
 export interface Exercise {

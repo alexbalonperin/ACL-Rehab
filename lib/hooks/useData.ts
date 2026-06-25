@@ -1,7 +1,7 @@
 "use client";
 
 import { useLiveQuery } from "dexie-react-hooks";
-import { db } from "../db";
+import { db, SURGERY_DATE_DEFAULT, SURGERY_DATE_KEY } from "../db";
 import type { ExerciseStatus } from "../types";
 import { today } from "../date";
 
@@ -54,4 +54,13 @@ export function useAllDailyMetrics() {
 
 export function usePtNotes() {
   return useLiveQuery(() => db.ptNotes.liveAllOrdered(), [], undefined);
+}
+
+/**
+ * The surgery date that anchors the Timeline, as a local YYYY-MM-DD string.
+ * Reactive via the `meta` table; falls back to the default until one is set.
+ */
+export function useSurgeryDate(): string {
+  const v = useLiveQuery(() => db.meta.get(SURGERY_DATE_KEY), [], undefined);
+  return v ?? SURGERY_DATE_DEFAULT;
 }
