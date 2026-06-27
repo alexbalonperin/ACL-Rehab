@@ -22,7 +22,7 @@ import type {
 } from "./types";
 import { newId } from "./id";
 import { today } from "./date";
-import { buildSeedData } from "./seed";
+import { buildSeedData, SEED_STAGES } from "./seed";
 
 // ── Repository contract (storage-agnostic) ──────────────────────────────────
 
@@ -104,6 +104,13 @@ export interface AppRepository {
   importAll(bundle: BackupBundle): Promise<void>;
   /** Seed default ACL protocol on first run (guarded by a meta flag). */
   ensureSeeded(): Promise<void>;
+  /**
+   * Non-destructive, one-time backfill so the Timeline isn't empty for databases
+   * seeded before the feature existed: assigns default post-op week ranges to
+   * stages that lack them and fills empty default phases with their exercises.
+   * Never deletes or overwrites existing content. Guarded by a meta flag.
+   */
+  ensureTimelineDefaults(): Promise<void>;
   /** Wipe everything and reseed. */
   resetAndReseed(): Promise<void>;
 }
@@ -116,6 +123,9 @@ interface MetaRow {
 }
 
 const SEEDED_KEY = "seeded";
+
+/** Guards the one-time, non-destructive Timeline backfill (see ensureTimelineDefaults). */
+const TIMELINE_BACKFILL_KEY = "timelineBackfillV1";
 
 /** Meta key + default for the surgery date that anchors the Timeline. */
 export const SURGERY_DATE_KEY = "surgeryDate";
@@ -357,6 +367,64 @@ class DexieRepository implements AppRepository {
         await d.exercises.bulkPut(exercises);
       }
       await d.meta.put({ key: SEEDED_KEY, value: "true" });
+    });
+  }
+
+  async ensureTimelineDefaults(): Promise<void> {
+    const done = await this.meta.get(TIMELINE_BACKFILL_KEY);
+    if (done === "true") return;
+    const d = idb();
+    await d.transaction("rw", [d.stages, d.exercises, d.meta], async () => {
+      const stages = await d.stages.orderBy("order").toArray();
+      const exercises = await d.exercises.toArray();
+      const countByStage = new Map<string, number>();
+      exercises.forEach((e) =>
+        countByStage.set(e.stageId, (countByStage.get(e.stageId) ?? 0) + 1),
+      );
+
+      for (let i = 0; i < SEED_STAGES.length; i++) {
+        const def = SEED_STAGES[i];
+        const existing = stages.find((s) => s.order === i);
+
+        if (!existing) {
+          // A default phase the user doesn't have (e.g. they deleted it) — recreate it.
+          const stageId = newId();
+          await d.stages.add({
+            id: stageId,
+            name: def.name,
+            order: i,
+            note: def.note,
+            startWeekPostOp: def.startWeekPostOp,
+            endWeekPostOp: def.endWeekPostOp,
+          });
+          await d.exercises.bulkPut(
+            def.exercises.map((e, ei) => ({ ...e, id: newId(), stageId, order: ei })),
+          );
+          continue;
+        }
+
+        // Assign default week ranges only when the stage has none (respect edits).
+        if (existing.startWeekPostOp == null && existing.endWeekPostOp == null) {
+          await d.stages.update(existing.id, {
+            startWeekPostOp: def.startWeekPostOp,
+            endWeekPostOp: def.endWeekPostOp,
+          });
+        }
+
+        // Fill default exercises only when the stage is empty (never clobber/duplicate).
+        if ((countByStage.get(existing.id) ?? 0) === 0 && def.exercises.length > 0) {
+          await d.exercises.bulkPut(
+            def.exercises.map((e, ei) => ({
+              ...e,
+              id: newId(),
+              stageId: existing.id,
+              order: ei,
+            })),
+          );
+        }
+      }
+
+      await d.meta.put({ key: TIMELINE_BACKFILL_KEY, value: "true" });
     });
   }
 
