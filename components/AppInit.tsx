@@ -14,6 +14,7 @@ export function AppInit() {
     let cancelled = false;
     (async () => {
       await db.ensureSeeded();
+      await db.ensureTimelineDefaults();
       if (!cancelled) await hydrate();
     })();
     return () => {
