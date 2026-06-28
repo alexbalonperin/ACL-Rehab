@@ -1,24 +1,22 @@
 import type { Exercise, Stage } from "./types";
 import { newId } from "./id";
+import { buildCriteria, CLINICAL_PHASES, effectiveHardGateDate } from "./rehab";
+import { DEFAULT_SURGERY_DATE } from "./types";
 
 // NOTE: All seed exercises, sets, reps and progressions below are PLACEHOLDERS.
 // They reflect the user's stated current clearance but must be confirmed with a
 // surgeon / physiotherapist. This app tracks the plan they give you; it does not
 // prescribe one. Everything here is fully editable in-app after first run.
+//
+// The PHASE structure (names, goals, gating exit criteria, time windows, the
+// return-to-sport hard gate) comes from the evidence-based blueprints in
+// lib/rehab.ts. Exercises are mapped onto phases by phaseKey below.
 
 interface SeedExercise extends Omit<Exercise, "id" | "stageId" | "order"> {}
 
-interface SeedStage {
-  name: string;
-  note?: string;
-  exercises: SeedExercise[];
-}
-
-const SEED: SeedStage[] = [
-  {
-    name: "Phase 1 — Weeks 0–2 (Protection & Activation)",
-    note: "Protect the graft, restore quad activation, manage swelling. Operated leg is not loaded or moved through range yet.",
-    exercises: [
+// Exercises are attached to a phase by its stable phaseKey.
+const EXERCISES_BY_PHASE: Record<string, SeedExercise[]> = {
+  "early-recovery": [
       // --- Active: operated leg, explicitly cleared ---
       {
         name: "Quad set (isometric quad squeeze)",
@@ -126,11 +124,7 @@ const SEED: SeedStage[] = [
           "Single-leg only on the NON-operated side. Avoid any setup that requires the operated leg to brace, push, or balance.",
       },
     ],
-  },
-  {
-    name: "Phase 2 — Early Progression (operated-leg, not cleared yet)",
-    note: "Operated-leg progressions to unlock once your PT clears motion and light loading. Keep these in Upcoming until then.",
-    exercises: [
+  "foundation": [
       {
         name: "Heel slides",
         status: "upcoming",
@@ -180,28 +174,39 @@ const SEED: SeedStage[] = [
         caution: "Significant single-leg loading of the operated leg. Confirm with your PT before activating.",
       },
     ],
-  },
-  {
-    name: "Phase 3 — Strengthening",
-    note: "Progressive strengthening of the operated leg. Add exercises here as your PT prescribes them.",
-    exercises: [],
-  },
-  {
-    name: "Phase 4 — Return to Sport",
-    note: "Power, agility and sport-specific work once strength and stability criteria are met.",
-    exercises: [],
-  },
-];
+};
 
-/** Build concrete Stage + Exercise records with ids and ordering. */
-export function buildSeedData(): { stages: Stage[]; exercises: Exercise[] } {
+/**
+ * Build concrete Stage + Exercise records from the clinical phase blueprints,
+ * wiring in ids, ordering, gating criteria, time windows and the RTS hard gate.
+ * `surgeryDate` drives the hard-gate date (defaults to the seeded surgery date).
+ */
+export function buildSeedData(
+  surgeryDate: string = DEFAULT_SURGERY_DATE,
+): { stages: Stage[]; exercises: Exercise[] } {
   const stages: Stage[] = [];
   const exercises: Exercise[] = [];
 
-  SEED.forEach((s, si) => {
+  CLINICAL_PHASES.forEach((bp, si) => {
     const stageId = newId();
-    stages.push({ id: stageId, name: s.name, order: si, note: s.note });
-    s.exercises.forEach((e, ei) => {
+    const stage: Stage = {
+      id: stageId,
+      name: bp.name,
+      order: si,
+      note: bp.note,
+      phaseKey: bp.phaseKey,
+      goals: bp.goals,
+      gatingCriteria: buildCriteria(bp.criteria, newId),
+      minWeekPostOp: bp.minWeekPostOp,
+      maxWeekPostOp: bp.maxWeekPostOp,
+    };
+    if (bp.hardGate) {
+      stage.hardGate = true;
+      stage.hardGateDate = effectiveHardGateDate(bp, surgeryDate);
+    }
+    stages.push(stage);
+
+    (EXERCISES_BY_PHASE[bp.phaseKey] ?? []).forEach((e, ei) => {
       exercises.push({ ...e, id: newId(), stageId, order: ei });
     });
   });

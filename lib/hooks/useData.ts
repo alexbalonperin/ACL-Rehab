@@ -3,7 +3,13 @@
 import { useLiveQuery } from "dexie-react-hooks";
 import { db } from "../db";
 import type { ExerciseStatus } from "../types";
+import {
+  GRAFT_TYPE_KEY,
+  SURGERY_DATE_KEY,
+  TARGET_SPORT_KEY,
+} from "../types";
 import { today } from "../date";
+import { resolveSettings, type RehabSettings } from "../rehab";
 
 // Each hook subscribes via useLiveQuery but only ever calls repository methods,
 // so all data access stays behind the lib/db.ts seam.
@@ -54,4 +60,20 @@ export function useAllDailyMetrics() {
 
 export function usePtNotes() {
   return useLiveQuery(() => db.ptNotes.liveAllOrdered(), [], undefined);
+}
+
+/** Live rehab settings (surgery date, graft type, target sport). */
+export function useRehabSettings(): RehabSettings | undefined {
+  return useLiveQuery(async () => {
+    const [surgeryDate, graftType, targetSport] = await Promise.all([
+      db.meta.get(SURGERY_DATE_KEY),
+      db.meta.get(GRAFT_TYPE_KEY),
+      db.meta.get(TARGET_SPORT_KEY),
+    ]);
+    return resolveSettings({
+      [SURGERY_DATE_KEY]: surgeryDate,
+      [GRAFT_TYPE_KEY]: graftType,
+      [TARGET_SPORT_KEY]: targetSport,
+    });
+  }, [], undefined);
 }

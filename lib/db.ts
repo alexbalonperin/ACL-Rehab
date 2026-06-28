@@ -8,7 +8,7 @@
 // `export const db = ...` line at the bottom. No UI changes required.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import Dexie, { type Table, type UpdateSpec } from "dexie";
+import Dexie, { type Table, type Transaction, type UpdateSpec } from "dexie";
 import type {
   BackupBundle,
   DailyMetric,
@@ -16,13 +16,28 @@ import type {
   ExerciseStatus,
   LogEntry,
   NmesSession,
+  PhaseCriterion,
   PtNote,
   Session,
   Stage,
 } from "./types";
+import {
+  DEFAULT_GRAFT_TYPE,
+  DEFAULT_SURGERY_DATE,
+  DEFAULT_TARGET_SPORT,
+  GRAFT_TYPE_KEY,
+  SURGERY_DATE_KEY,
+  TARGET_SPORT_KEY,
+} from "./types";
 import { newId } from "./id";
 import { today } from "./date";
 import { buildSeedData } from "./seed";
+import {
+  buildCriteria,
+  CLINICAL_PHASES,
+  effectiveHardGateDate,
+  V1_PHASE_KEYS,
+} from "./rehab";
 
 // ── Repository contract (storage-agnostic) ──────────────────────────────────
 
@@ -38,6 +53,12 @@ export interface CrudRepo<T> {
 export interface StageRepo extends CrudRepo<Stage> {
   liveAllOrdered(): Promise<Stage[]>;
   reorder(orderedIds: string[]): Promise<void>;
+  /** Toggle / annotate a single gating criterion, stamping updatedAt. */
+  setCriterion(
+    stageId: string,
+    criterionId: string,
+    patch: { checked?: boolean; note?: string },
+  ): Promise<void>;
 }
 
 export interface ExerciseRepo extends CrudRepo<Exercise> {
@@ -129,6 +150,17 @@ class AclRehabDB extends Dexie {
 
   constructor() {
     super("AclRehabDB");
+    const STORES = {
+      stages: "id, order, phaseKey",
+      exercises: "id, stageId, status, order, [stageId+order], [status+order]",
+      sessions: "id, date, startedAt, endedAt",
+      logEntries: "id, date, exerciseId, sessionId, [date+exerciseId]",
+      nmesSessions: "id, date, sessionId",
+      dailyMetrics: "id, date",
+      ptNotes: "id, date",
+      meta: "key",
+    };
+    // v1: original schema (kept verbatim so existing DBs are recognised).
     this.version(1).stores({
       stages: "id, order",
       exercises: "id, stageId, status, order, [stageId+order], [status+order]",
@@ -139,7 +171,84 @@ class AclRehabDB extends Dexie {
       ptNotes: "id, date",
       meta: "key",
     });
+    // v2: clinical detail layered onto phases. Indexes phaseKey and migrates
+    // existing data in place — no records are deleted or reset.
+    this.version(2)
+      .stores(STORES)
+      .upgrade((tx) => migrateToV2(tx));
   }
+}
+
+/**
+ * v2 upgrade: enrich existing phases (Stage records) with goals, gating exit
+ * criteria, post-op time windows and the return-to-sport hard gate, and insert
+ * any clinical phases that the original 4-phase seed didn't include — all
+ * without touching exercises, logs, metrics or notes.
+ */
+async function migrateToV2(tx: Transaction) {
+  const stagesTbl = tx.table<Stage, string>("stages");
+  const metaTbl = tx.table<MetaRow, string>("meta");
+
+  // Seed settings if absent (fresh-but-pre-v2 installs won't have them).
+  const surgeryDate = (await metaTbl.get(SURGERY_DATE_KEY))?.value ?? DEFAULT_SURGERY_DATE;
+  await putIfMissing(metaTbl, SURGERY_DATE_KEY, DEFAULT_SURGERY_DATE);
+  await putIfMissing(metaTbl, GRAFT_TYPE_KEY, DEFAULT_GRAFT_TYPE);
+  await putIfMissing(metaTbl, TARGET_SPORT_KEY, DEFAULT_TARGET_SPORT);
+
+  const existing = (await stagesTbl.toArray()).sort((a, b) => a.order - b.order);
+
+  const patchFromBlueprint = (phaseKey: string): Partial<Stage> => {
+    const bp = CLINICAL_PHASES.find((p) => p.phaseKey === phaseKey)!;
+    const patch: Partial<Stage> = {
+      phaseKey: bp.phaseKey,
+      goals: bp.goals,
+      gatingCriteria: buildCriteria(bp.criteria, newId),
+      minWeekPostOp: bp.minWeekPostOp,
+      maxWeekPostOp: bp.maxWeekPostOp,
+    };
+    if (bp.hardGate) {
+      patch.hardGate = true;
+      patch.hardGateDate = effectiveHardGateDate(bp, surgeryDate);
+    }
+    return patch;
+  };
+
+  const newStageFromBlueprint = (phaseKey: string, order: number): Stage => {
+    const bp = CLINICAL_PHASES.find((p) => p.phaseKey === phaseKey)!;
+    return { id: newId(), name: bp.name, order, note: bp.note, ...patchFromBlueprint(phaseKey) };
+  };
+
+  const alreadyEnriched = existing.some((s) => s.phaseKey);
+  if (alreadyEnriched) return; // idempotent: nothing to do.
+
+  if (existing.length === V1_PHASE_KEYS.length) {
+    // Clean default path: the original 4 seeded phases map by position to
+    // early-recovery / foundation / strength / return-to-sport. The two
+    // mid-rehab phases (running-plyo, agility) are inserted between strength
+    // and return-to-sport. Existing names/notes are preserved.
+    const finalOrder = [0, 1, 2, 5]; // strength keeps 2; RTS moves to 5.
+    for (let i = 0; i < existing.length; i++) {
+      const phaseKey = V1_PHASE_KEYS[i];
+      await stagesTbl.update(existing[i].id, {
+        ...patchFromBlueprint(phaseKey),
+        order: finalOrder[i],
+      });
+    }
+    await stagesTbl.add(newStageFromBlueprint("running-plyo", 3));
+    await stagesTbl.add(newStageFromBlueprint("agility", 4));
+  } else {
+    // Customised data: don't reshuffle. Append any clinical phases that aren't
+    // present yet so the full structure exists, and best-effort enrich phases
+    // whose name still matches a known default.
+    let nextOrder = existing.reduce((m, s) => Math.max(m, s.order), -1) + 1;
+    for (const bp of CLINICAL_PHASES) {
+      await stagesTbl.add(newStageFromBlueprint(bp.phaseKey, nextOrder++));
+    }
+  }
+}
+
+async function putIfMissing(table: Table<MetaRow, string>, key: string, value: string) {
+  if (!(await table.get(key))) await table.put({ key, value });
 }
 
 // Lazily instantiate so this module is import-safe on the server. Dexie itself
@@ -180,6 +289,23 @@ class DexieRepository implements AppRepository {
         await Promise.all(
           orderedIds.map((id, i) => idb().stages.update(id, { order: i })),
         );
+      });
+    },
+    setCriterion: async (stageId, criterionId, patch) => {
+      await idb().transaction("rw", idb().stages, async () => {
+        const stage = await idb().stages.get(stageId);
+        if (!stage?.gatingCriteria) return;
+        const next: PhaseCriterion[] = stage.gatingCriteria.map((c) =>
+          c.id === criterionId
+            ? {
+                ...c,
+                ...(patch.checked !== undefined ? { checked: patch.checked } : {}),
+                ...(patch.note !== undefined ? { note: patch.note } : {}),
+                updatedAt: Date.now(),
+              }
+            : c,
+        );
+        await idb().stages.update(stageId, { gatingCriteria: next });
       });
     },
   };
@@ -288,7 +414,7 @@ class DexieRepository implements AppRepository {
 
   async exportAll(): Promise<BackupBundle> {
     const d = idb();
-    const [stages, exercises, sessions, logEntries, nmesSessions, dailyMetrics, ptNotes] =
+    const [stages, exercises, sessions, logEntries, nmesSessions, dailyMetrics, ptNotes, meta] =
       await Promise.all([
         d.stages.toArray(),
         d.exercises.toArray(),
@@ -297,9 +423,10 @@ class DexieRepository implements AppRepository {
         d.nmesSessions.toArray(),
         d.dailyMetrics.toArray(),
         d.ptNotes.toArray(),
+        d.meta.toArray(),
       ]);
     return {
-      version: 1,
+      version: 2,
       exportedAt: new Date().toISOString(),
       stages,
       exercises,
@@ -308,6 +435,7 @@ class DexieRepository implements AppRepository {
       nmesSessions,
       dailyMetrics,
       ptNotes,
+      meta,
     };
   }
 
@@ -334,6 +462,8 @@ class DexieRepository implements AppRepository {
           d.nmesSessions.bulkPut(bundle.nmesSessions ?? []),
           d.dailyMetrics.bulkPut(bundle.dailyMetrics ?? []),
           d.ptNotes.bulkPut(bundle.ptNotes ?? []),
+          // Restore settings (surgery date, graft, sport) if the backup has them.
+          d.meta.bulkPut(bundle.meta ?? []),
         ]);
         await d.meta.put({ key: SEEDED_KEY, value: "true" });
       },
@@ -343,7 +473,7 @@ class DexieRepository implements AppRepository {
   async ensureSeeded(): Promise<void> {
     const seeded = await this.meta.get(SEEDED_KEY);
     if (seeded === "true") return;
-    const { stages, exercises } = buildSeedData();
+    const { stages, exercises } = buildSeedData(DEFAULT_SURGERY_DATE);
     const d = idb();
     await d.transaction("rw", [d.stages, d.exercises, d.meta], async () => {
       // Guard against a race where another tab seeded first.
@@ -352,6 +482,9 @@ class DexieRepository implements AppRepository {
         await d.stages.bulkPut(stages);
         await d.exercises.bulkPut(exercises);
       }
+      await putIfMissing(d.meta, SURGERY_DATE_KEY, DEFAULT_SURGERY_DATE);
+      await putIfMissing(d.meta, GRAFT_TYPE_KEY, DEFAULT_GRAFT_TYPE);
+      await putIfMissing(d.meta, TARGET_SPORT_KEY, DEFAULT_TARGET_SPORT);
       await d.meta.put({ key: SEEDED_KEY, value: "true" });
     });
   }
@@ -372,9 +505,12 @@ class DexieRepository implements AppRepository {
           d.ptNotes.clear(),
           d.meta.clear(),
         ]);
-        const { stages, exercises } = buildSeedData();
+        const { stages, exercises } = buildSeedData(DEFAULT_SURGERY_DATE);
         await d.stages.bulkPut(stages);
         await d.exercises.bulkPut(exercises);
+        await d.meta.put({ key: SURGERY_DATE_KEY, value: DEFAULT_SURGERY_DATE });
+        await d.meta.put({ key: GRAFT_TYPE_KEY, value: DEFAULT_GRAFT_TYPE });
+        await d.meta.put({ key: TARGET_SPORT_KEY, value: DEFAULT_TARGET_SPORT });
         await d.meta.put({ key: SEEDED_KEY, value: "true" });
       },
     );
