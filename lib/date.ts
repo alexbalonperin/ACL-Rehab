@@ -12,6 +12,32 @@ export function today(): string {
   return localDateString();
 }
 
+/**
+ * Today's date as YYYY-MM-DD in Asia/Tokyo, independent of the device timezone.
+ * Used for all rehab-timeline / post-op math. Uses Intl only — works offline.
+ */
+export function tokyoToday(): string {
+  // en-CA formats as YYYY-MM-DD.
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
+/** Add n calendar months to a YYYY-MM-DD string, returning a YYYY-MM-DD string. */
+export function addMonths(s: string, n: number): string {
+  const d = parseLocalDate(s);
+  const targetMonth = d.getMonth() + n;
+  const result = new Date(d.getFullYear(), targetMonth, d.getDate());
+  // Guard against month overflow (e.g. adding to the 31st): clamp to month end.
+  if (result.getMonth() !== ((targetMonth % 12) + 12) % 12) {
+    result.setDate(0);
+  }
+  return localDateString(result);
+}
+
 /** Parse a YYYY-MM-DD string into a local Date (midnight local time). */
 export function parseLocalDate(s: string): Date {
   const [y, m, d] = s.split("-").map(Number);

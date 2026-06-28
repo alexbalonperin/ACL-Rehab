@@ -20,8 +20,11 @@ import {
 import clsx from "clsx";
 import type { Exercise, ExerciseStatus, Stage } from "@/lib/types";
 import { db } from "@/lib/db";
-import { useExercises, useStages } from "@/lib/hooks/useData";
+import { useExercises, useRehabSettings, useStages } from "@/lib/hooks/useData";
+import { currentPhaseId, weeksPostOp } from "@/lib/rehab";
+import { tokyoToday } from "@/lib/date";
 import { ExerciseCard } from "./ExerciseCard";
+import { PhaseDetail } from "./PhaseDetail";
 
 const BUCKETS: { status: ExerciseStatus; label: string; tone: string }[] = [
   { status: "active", label: "Active — cleared to do now", tone: "border-brand/40" },
@@ -72,6 +75,7 @@ function Bucket({
 export function Board() {
   const stages = useStages();
   const exercises = useExercises();
+  const settings = useRehabSettings();
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -132,6 +136,10 @@ export function Board() {
   const setStatus = (id: string, status: ExerciseStatus) =>
     db.exercises.setStatus(id, status);
 
+  const todayStr = tokyoToday();
+  const weeks = settings ? weeksPostOp(settings.surgeryDate, todayStr) : 0;
+  const currentId = settings ? currentPhaseId(stages, weeks) : null;
+
   return (
     <DndContext sensors={sensors} collisionDetection={closestCorners} onDragEnd={handleDragEnd}>
       <div className="space-y-6">
@@ -141,7 +149,16 @@ export function Board() {
             {stage.note && (
               <p className="mb-2 mt-0.5 text-xs text-neutral-500">{stage.note}</p>
             )}
-            <div className="space-y-3">
+            {settings && (
+              <PhaseDetail
+                stage={stage}
+                weeks={weeks}
+                todayStr={todayStr}
+                surgeryDate={settings.surgeryDate}
+                isCurrent={stage.id === currentId}
+              />
+            )}
+            <div className="mt-3 space-y-3">
               {BUCKETS.map((b) => (
                 <Bucket
                   key={b.status}
